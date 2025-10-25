@@ -1,313 +1,322 @@
-// ============================================
-// 出退勤打刻アプリ - Google Apps Script
-// ============================================
+// Google Apps Script - 出退勤打刻アプリ バックエンド
 
-// ============================================
-// 設定セクション - ここを編集してください
-// ============================================
-const CONFIG = {
-  // LINE Notify トークン（LINE Notifyで取得したトークンを設定）
-  // 取得方法: https://notify-bot.line.me/ → マイページ → トークンを発行する
-  LINE_NOTIFY_TOKEN: 'YOUR_LINE_NOTIFY_TOKEN_HERE',
+// スクリプトプロパティから取得（事前に設定が必要）
+const LINE_CHANNEL_ACCESS_TOKEN = PropertiesService.getScriptProperties().getProperty('LINE_CHANNEL_ACCESS_TOKEN');
+const LINE_GROUP_ID = PropertiesService.getScriptProperties().getProperty('LINE_GROUP_ID');
 
-  // スプレッドシートのシート名
-  SHEET_NAME: '出退勤記録',
+// スプレッドシート取得
+function getSpreadsheet() {
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
 
-  // タイムゾーン
-  TIMEZONE: 'Asia/Tokyo',
+// 各シート取得
+function getSheets() {
+  const ss = getSpreadsheet();
+  return {
+    master: ss.getSheetByName('研修生マスタ'),
+    records: ss.getSheetByName('打刻記録'),
+    complete: ss.getSheetByName('課題完了記録')
+  };
+}
 
-  // 日付フォーマット
-  DATE_FORMAT: 'yyyy/MM/dd HH:mm:ss'
-};
-
-// ============================================
-// ユーザーマッピング
-// ============================================
-const USER_MAP = {
-  'user01': '川瀬隼',
-  // 他のユーザーを追加する場合はここに記述
-  // 'user02': '山田太郎',
-  // 'user03': '佐藤花子',
-};
-
-// ============================================
-// メイン処理 - GETリクエスト処理
-// ============================================
+// GETリクエスト処理
 function doGet(e) {
   try {
-    const params = e.parameter;
-    const action = params.action;
-    const userId = params.userId;
-    const timestamp = new Date(params.timestamp);
+    const action = e.parameter.action;
+    const userId = e.parameter.userId;
 
-    let result;
-
-    switch(action) {
-      case 'checkin':
-        result = handleCheckIn(userId, timestamp);
-        break;
-      case 'checkout':
-        result = handleCheckOut(userId, timestamp);
-        break;
-      case 'complete':
-        result = handleComplete(userId, params.appUrl, timestamp);
-        break;
-      default:
-        result = {success: false, message: 'Invalid action'};
+    if (action === 'getTodayRecord') {
+      return getTodayRecord(userId);
     }
 
-    // JSONP形式でレスポンスを返す（CORS対策）
-    const callback = params.callback || 'callback';
-    const jsonp = callback + '(' + JSON.stringify(result) + ')';
-
-    return ContentService
-      .createTextOutput(jsonp)
-      .setMimeType(ContentService.MimeType.JAVASCRIPT);
-
+    return createResponse(false, '無効なアクションです');
   } catch (error) {
-    Logger.log('doGet Error: ' + error);
-    const callback = e.parameter.callback || 'callback';
-    const errorResponse = callback + '(' + JSON.stringify({
-      success: false,
-      message: 'エラー: ' + error.message
-    }) + ')';
-
-    return ContentService
-      .createTextOutput(errorResponse)
-      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+    Logger.log('Error in doGet: ' + error.toString());
+    return createResponse(false, 'エラーが発生しました: ' + error.toString());
   }
 }
 
-// ============================================
-// 出勤処理
-// ============================================
-function handleCheckIn(userId, timestamp) {
+// POSTリクエスト処理
+function doPost(e) {
   try {
-    const sheet = getOrCreateSheet();
-    const timeStr = Utilities.formatDate(timestamp, CONFIG.TIMEZONE, CONFIG.DATE_FORMAT);
-    const userName = getUserName(userId);
+    const data = JSON.parse(e.postData.contents);
+    const action = data.action;
 
-    // スプレッドシートに記録
-    sheet.appendRow([
-      timeStr,
-      userName,
-      userId,
-      '出勤',
-      '',  // 退勤時刻（空欄）
-      ''   // 勤務時間（空欄）
-    ]);
-
-    // LINE通知
-    const message = `🌅 出勤打刻\n\n👤 ${userName} (${userId})\n🕐 ${timeStr}\n\n出勤を記録しました。`;
-    sendLineNotification(message);
-
-    return {
-      success: true,
-      message: '出勤を記録しました\nLINEに通知しました'
-    };
+    switch (action) {
+      case 'clockIn':
+        return clockIn(data.userId, data.userName);
+      case 'clockOut':
+        return clockOut(data.userId, data.userName);
+      case 'reportComplete':
+        return reportComplete(data.userId, data.userName, data.appUrl);
+      default:
+        return createResponse(false, '無効なアクションです');
+    }
   } catch (error) {
-    Logger.log('CheckIn Error: ' + error);
-    return {
-      success: false,
-      message: 'エラー: ' + error.message
-    };
+    Logger.log('Error in doPost: ' + error.toString());
+    return createResponse(false, 'エラーが発生しました: ' + error.toString());
   }
 }
 
-// ============================================
-// 退勤処理
-// ============================================
-function handleCheckOut(userId, timestamp) {
+// 今日の記録を取得
+function getTodayRecord(userId) {
   try {
-    const sheet = getOrCreateSheet();
-    const timeStr = Utilities.formatDate(timestamp, CONFIG.TIMEZONE, CONFIG.DATE_FORMAT);
-    const userName = getUserName(userId);
+    const sheets = getSheets();
+    const recordsSheet = sheets.records;
+    const today = Utilities.formatDate(new Date(), 'JST', 'yyyy/MM/dd');
 
-    // 最新の出勤記録を取得
-    const data = sheet.getDataRange().getValues();
-    let checkInRow = null;
-    let checkInTime = null;
+    const data = recordsSheet.getDataRange().getValues();
 
-    // 最後の行から検索（最新の出勤を見つける）
-    for (let i = data.length - 1; i >= 1; i--) {  // ヘッダーをスキップ
-      if (data[i][2] === userId && data[i][3] === '出勤' && !data[i][4]) {
-        checkInRow = i + 1;  // スプレッドシートは1から始まる
-        checkInTime = new Date(data[i][0]);
-        break;
+    // ヘッダー行をスキップして検索
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      if (row[0] === today && row[1] === userId) {
+        // 該当レコードが見つかった
+        return createResponse(true, '記録を取得しました', {
+          record: {
+            date: row[0],
+            userId: row[1],
+            userName: row[2],
+            clockIn: row[3] ? formatTime(row[3]) : null,
+            clockOut: row[4] ? formatTime(row[4]) : null,
+            workHours: row[5] || null
+          }
+        });
       }
     }
 
-    let message = `🌆 退勤打刻\n\n👤 ${userName} (${userId})\n🕐 ${timeStr}\n\n`;
-    let workHours = '';
+    // 今日の記録がない
+    return createResponse(true, '今日の記録はありません', {
+      record: null
+    });
+  } catch (error) {
+    Logger.log('Error in getTodayRecord: ' + error.toString());
+    return createResponse(false, 'エラーが発生しました: ' + error.toString());
+  }
+}
 
-    if (checkInTime) {
-      // 勤務時間を計算
-      const workMillis = timestamp - checkInTime;
-      const hours = Math.floor(workMillis / (1000 * 60 * 60));
-      const minutes = Math.floor((workMillis % (1000 * 60 * 60)) / (1000 * 60));
-      workHours = `${hours}時間${minutes}分`;
+// 出勤打刻
+function clockIn(userId, userName) {
+  try {
+    const sheets = getSheets();
+    const recordsSheet = sheets.records;
+    const now = new Date();
+    const today = Utilities.formatDate(now, 'JST', 'yyyy/MM/dd');
+    const clockInTime = Utilities.formatDate(now, 'JST', 'HH:mm');
 
-      // 既存の出勤行を更新
-      sheet.getRange(checkInRow, 5).setValue(timeStr);  // 退勤時刻
-      sheet.getRange(checkInRow, 6).setValue(workHours);  // 勤務時間
-
-      message += `⏱️ 勤務時間: ${workHours}\n`;
-      message += `✅ お疲れ様でした！`;
-    } else {
-      // 出勤記録がない場合は新規行として追加
-      sheet.appendRow([
-        timeStr,
-        userName,
-        userId,
-        '退勤',
-        '',
-        ''
-      ]);
-      message += '⚠️ 出勤記録が見つかりません\n退勤のみ記録しました';
+    // 今日の記録が既に存在するかチェック
+    const data = recordsSheet.getDataRange().getValues();
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0] === today && data[i][1] === userId) {
+        return createResponse(false, '本日は既に出勤打刻済みです');
+      }
     }
+
+    // 新しい行を追加
+    recordsSheet.appendRow([
+      today,
+      userId,
+      userName,
+      clockInTime,
+      '', // 退勤時刻（未入力）
+      ''  // 勤務時間（未計算）
+    ]);
 
     // LINE通知
-    sendLineNotification(message);
+    sendLineMessage(`【出勤】\n${userName}\n${today} ${clockInTime}`);
 
-    return {
-      success: true,
-      message: workHours ? `退勤を記録しました\n勤務時間: ${workHours}` : '退勤を記録しました'
-    };
+    return createResponse(true, '出勤打刻が完了しました', {
+      clockInTime: clockInTime
+    });
   } catch (error) {
-    Logger.log('CheckOut Error: ' + error);
-    return {
-      success: false,
-      message: 'エラー: ' + error.message
-    };
+    Logger.log('Error in clockIn: ' + error.toString());
+    return createResponse(false, 'エラーが発生しました: ' + error.toString());
   }
 }
 
-// ============================================
-// 課題完了報告処理
-// ============================================
-function handleComplete(userId, appUrl, timestamp) {
+// 退勤打刻
+function clockOut(userId, userName) {
   try {
-    const timeStr = Utilities.formatDate(timestamp, CONFIG.TIMEZONE, CONFIG.DATE_FORMAT);
-    const userName = getUserName(userId);
+    const sheets = getSheets();
+    const recordsSheet = sheets.records;
+    const now = new Date();
+    const today = Utilities.formatDate(now, 'JST', 'yyyy/MM/dd');
+    const clockOutTime = Utilities.formatDate(now, 'JST', 'HH:mm');
 
-    // LINE通知（管理者向け）
-    const message = `🎉 課題完了報告\n\n👤 ${userName} (${userId})\n🕐 ${timeStr}\n\n✨ 課題が完了しました！\n\n📱 アプリURL:\n${appUrl || 'https://syun1077.github.io/attendance-app/'}`;
-    sendLineNotification(message);
+    const data = recordsSheet.getDataRange().getValues();
 
-    return {
-      success: true,
-      message: '課題完了を報告しました\nLINEに通知しました'
-    };
+    // 今日の出勤記録を検索
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      if (row[0] === today && row[1] === userId) {
+        // 既に退勤済みかチェック
+        if (row[4]) {
+          return createResponse(false, '本日は既に退勤打刻済みです');
+        }
+
+        const clockInTime = row[3];
+
+        // 勤務時間を計算
+        const workHours = calculateWorkHours(clockInTime, clockOutTime);
+
+        // 退勤時刻と勤務時間を更新
+        recordsSheet.getRange(i + 1, 5).setValue(clockOutTime); // 退勤時刻
+        recordsSheet.getRange(i + 1, 6).setValue(workHours);    // 勤務時間
+
+        // LINE通知
+        const message = `【退勤】\n${userName}\n出勤:${formatTime(clockInTime)}\n退勤:${clockOutTime}\n勤務:${workHours}`;
+        sendLineMessage(message);
+
+        return createResponse(true, '退勤打刻が完了しました', {
+          clockInTime: formatTime(clockInTime),
+          clockOutTime: clockOutTime,
+          workHours: workHours
+        });
+      }
+    }
+
+    return createResponse(false, '本日の出勤記録が見つかりません');
   } catch (error) {
-    Logger.log('Complete Error: ' + error);
-    return {
-      success: false,
-      message: 'エラー: ' + error.message
-    };
+    Logger.log('Error in clockOut: ' + error.toString());
+    return createResponse(false, 'エラーが発生しました: ' + error.toString());
   }
 }
 
-// ============================================
+// 課題完了報告
+function reportComplete(userId, userName, appUrl) {
+  try {
+    const sheets = getSheets();
+    const completeSheet = sheets.complete;
+    const now = new Date();
+    const completeDateTime = Utilities.formatDate(now, 'JST', 'yyyy/MM/dd HH:mm');
+
+    // 完了記録を追加
+    completeSheet.appendRow([
+      completeDateTime,
+      userId,
+      userName,
+      appUrl,
+      '' // 判定（管理者が入力）
+    ]);
+
+    // LINE通知
+    const message = `【🎉課題完了報告🎉】\n研修生:${userName}(${userId})\n完了:${completeDateTime}\n\nアプリURL:\n${appUrl}\n\n確認をお願いします!`;
+    sendLineMessage(message);
+
+    return createResponse(true, '課題完了報告を送信しました');
+  } catch (error) {
+    Logger.log('Error in reportComplete: ' + error.toString());
+    return createResponse(false, 'エラーが発生しました: ' + error.toString());
+  }
+}
+
 // LINE通知送信
-// ============================================
-function sendLineNotification(message) {
-  const token = CONFIG.LINE_NOTIFY_TOKEN;
-
-  // トークンが設定されていない場合はスキップ
-  if (!token || token === 'YOUR_LINE_NOTIFY_TOKEN_HERE') {
-    Logger.log('LINE通知スキップ: トークン未設定');
-    Logger.log('送信予定メッセージ: ' + message);
-    return;
-  }
-
-  const options = {
-    method: 'post',
-    headers: {
-      'Authorization': 'Bearer ' + token
-    },
-    payload: {
-      message: message
-    },
-    muteHttpExceptions: true
-  };
-
+function sendLineMessage(message) {
   try {
-    const response = UrlFetchApp.fetch('https://notify-api.line.me/api/notify', options);
+    const url = 'https://api.line.me/v2/bot/message/push';
+
+    const payload = {
+      to: LINE_GROUP_ID,
+      messages: [{
+        type: 'text',
+        text: message
+      }]
+    };
+
+    const options = {
+      method: 'post',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + LINE_CHANNEL_ACCESS_TOKEN
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch(url, options);
     const responseCode = response.getResponseCode();
 
-    if (responseCode === 200) {
-      Logger.log('LINE通知成功');
-    } else {
-      Logger.log('LINE通知エラー: ' + responseCode);
-      Logger.log('レスポンス: ' + response.getContentText());
+    if (responseCode !== 200) {
+      Logger.log('LINE API Error: ' + response.getContentText());
+      throw new Error('LINE通知の送信に失敗しました');
     }
+
+    Logger.log('LINE notification sent successfully');
   } catch (error) {
-    Logger.log('LINE通知例外: ' + error);
+    Logger.log('Error in sendLineMessage: ' + error.toString());
+    throw error;
   }
 }
 
-// ============================================
-// シート取得・作成
-// ============================================
-function getOrCreateSheet() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(CONFIG.SHEET_NAME);
+// 勤務時間計算
+function calculateWorkHours(clockIn, clockOut) {
+  // 時刻を分単位に変換
+  const clockInParts = clockIn.toString().split(':');
+  const clockOutParts = clockOut.toString().split(':');
 
-  // シートが存在しない場合は作成
-  if (!sheet) {
-    sheet = ss.insertSheet(CONFIG.SHEET_NAME);
+  const clockInMinutes = parseInt(clockInParts[0]) * 60 + parseInt(clockInParts[1]);
+  const clockOutMinutes = parseInt(clockOutParts[0]) * 60 + parseInt(clockOutParts[1]);
 
-    // ヘッダー行を作成
-    const headers = ['日時', '名前', 'ユーザーID', '種別', '退勤時刻', '勤務時間'];
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  const totalMinutes = clockOutMinutes - clockInMinutes;
 
-    // ヘッダーのスタイル設定
-    const headerRange = sheet.getRange(1, 1, 1, headers.length);
-    headerRange.setBackground('#4CAF50');
-    headerRange.setFontColor('#FFFFFF');
-    headerRange.setFontWeight('bold');
-    headerRange.setHorizontalAlignment('center');
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
 
-    // 列幅の調整
-    sheet.setColumnWidth(1, 150);  // 日時
-    sheet.setColumnWidth(2, 120);  // 名前
-    sheet.setColumnWidth(3, 100);  // ユーザーID
-    sheet.setColumnWidth(4, 80);   // 種別
-    sheet.setColumnWidth(5, 150);  // 退勤時刻
-    sheet.setColumnWidth(6, 120);  // 勤務時間
+  return `${hours}時間${minutes}分`;
+}
 
-    // シートを固定
-    sheet.setFrozenRows(1);
+// 時刻フォーマット
+function formatTime(time) {
+  if (!time) return '';
+  if (typeof time === 'string') return time;
+
+  // Date型の場合
+  return Utilities.formatDate(time, 'JST', 'HH:mm');
+}
+
+// レスポンス作成
+function createResponse(success, message, data = {}) {
+  const response = {
+    success: success,
+    message: message,
+    ...data
+  };
+
+  return ContentService
+    .createTextOutput(JSON.stringify(response))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// 初期セットアップ用関数（手動実行）
+function setupSheets() {
+  const ss = getSpreadsheet();
+
+  // シート1: 研修生マスタ
+  let masterSheet = ss.getSheetByName('研修生マスタ');
+  if (!masterSheet) {
+    masterSheet = ss.insertSheet('研修生マスタ');
+    masterSheet.appendRow(['研修生ID', '氏名', 'ステータス']);
+    masterSheet.appendRow(['user01', 'あなたの名前', '進行中']);
   }
 
-  return sheet;
+  // シート2: 打刻記録
+  let recordsSheet = ss.getSheetByName('打刻記録');
+  if (!recordsSheet) {
+    recordsSheet = ss.insertSheet('打刻記録');
+    recordsSheet.appendRow(['日付', '研修生ID', '氏名', '出勤時刻', '退勤時刻', '勤務時間']);
+  }
+
+  // シート3: 課題完了記録
+  let completeSheet = ss.getSheetByName('課題完了記録');
+  if (!completeSheet) {
+    completeSheet = ss.insertSheet('課題完了記録');
+    completeSheet.appendRow(['完了日時', '研修生ID', '氏名', 'アプリURL', '判定']);
+  }
+
+  Logger.log('シートのセットアップが完了しました');
 }
 
-// ============================================
-// ユーザー名取得
-// ============================================
-function getUserName(userId) {
-  return USER_MAP[userId] || userId;
-}
-
-// ============================================
-// テスト関数
-// ============================================
-function testCheckIn() {
-  const result = handleCheckIn('user01', new Date());
-  Logger.log(result);
-}
-
-function testCheckOut() {
-  const result = handleCheckOut('user01', new Date());
-  Logger.log(result);
-}
-
-function testComplete() {
-  const result = handleComplete('user01', 'https://syun1077.github.io/attendance-app/', new Date());
-  Logger.log(result);
-}
-
-function testLineNotify() {
-  sendLineNotification('テスト通知\n\nこのメッセージが表示されればLINE通知は正常に動作しています。');
+// テスト用関数
+function testSendLineMessage() {
+  sendLineMessage('テストメッセージです');
 }
