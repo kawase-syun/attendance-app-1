@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#4CAF50">
+  <title>出退勤打刻アプリ</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+  <link rel="apple-touch-icon" href="icon-192.png">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📋 出退勤打刻</h1>
+      <p class="user-info">👤 川瀬隼 (user01)</p>
+    </header>
+
+    <div class="current-time">
+      <div class="time" id="currentTime">--:--:--</div>
+      <div class="date" id="currentDate">----/--/--</div>
+    </div>
+
+    <div class="button-group">
+      <button class="btn btn-clock-in" id="clockInBtn">
+        <span class="btn-icon">🌅</span>
+        <span class="btn-text">出勤</span>
+      </button>
+      
+      <button class="btn btn-clock-out" id="clockOutBtn">
+        <span class="btn-icon">🌆</span>
+        <span class="btn-text">退勤</span>
+      </button>
+    </div>
+
+    <div class="complete-section">
+      <button class="btn btn-complete" id="completeBtn">
+        <span class="btn-icon">🎉</span>
+        <span class="btn-text">課題完了報告</span>
+      </button>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <footer>
+      <p>© 2025 出退勤管理システム</p>
+    </footer>
+  </div>
+
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+  </div>
+
+  <div class="modal" id="modal">
+    <div class="modal-content">
+      <h2 id="modalTitle">確認</h2>
+      <p id="modalMessage"></p>
+      <div class="modal-buttons">
+        <button class="btn btn-cancel" id="modalCancel">キャンセル</button>
+        <button class="btn btn-ok" id="modalOk">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
