@@ -43,21 +43,42 @@ function updateClock() {
   elements.currentDate.textContent = dateStr;
 }
 
+// CORS回避のためのGAS通信関数（GETパラメータ方式）
+function sendToGAS(data) {
+  return new Promise((resolve, reject) => {
+    const params = new URLSearchParams(data).toString();
+    const url = `${CONFIG.GAS_URL}?${params}`;
+
+    const script = document.createElement('script');
+    const callbackName = 'gasCallback_' + Date.now();
+
+    window[callbackName] = (result) => {
+      delete window[callbackName];
+      document.body.removeChild(script);
+      resolve(result);
+    };
+
+    script.src = `${url}&callback=${callbackName}`;
+    script.onerror = () => {
+      delete window[callbackName];
+      document.body.removeChild(script);
+      reject(new Error('GAS通信エラー'));
+    };
+
+    document.body.appendChild(script);
+  });
+}
+
 async function handleClockIn() {
   const confirmed = await showConfirmModal('出勤打刻', '出勤打刻を行いますか？\nLINEグループに通知されます。');
   if (!confirmed) return;
   showLoading(true);
   try {
-    const response = await fetch(CONFIG.GAS_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        action: 'checkin',
-        userId: CONFIG.USER_ID,
-        timestamp: new Date().toISOString()
-      })
+    const result = await sendToGAS({
+      action: 'checkin',
+      userId: CONFIG.USER_ID,
+      timestamp: new Date().toISOString()
     });
-    const result = await response.json();
     if (result.success) {
       showStatus('success', result.message);
     } else {
@@ -76,16 +97,11 @@ async function handleClockOut() {
   if (!confirmed) return;
   showLoading(true);
   try {
-    const response = await fetch(CONFIG.GAS_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        action: 'checkout',
-        userId: CONFIG.USER_ID,
-        timestamp: new Date().toISOString()
-      })
+    const result = await sendToGAS({
+      action: 'checkout',
+      userId: CONFIG.USER_ID,
+      timestamp: new Date().toISOString()
     });
-    const result = await response.json();
     if (result.success) {
       showStatus('success', result.message);
     } else {
@@ -104,17 +120,12 @@ async function handleComplete() {
   if (!confirmed) return;
   showLoading(true);
   try {
-    const response = await fetch(CONFIG.GAS_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        action: 'complete',
-        userId: CONFIG.USER_ID,
-        appUrl: CONFIG.APP_URL,
-        timestamp: new Date().toISOString()
-      })
+    const result = await sendToGAS({
+      action: 'complete',
+      userId: CONFIG.USER_ID,
+      appUrl: CONFIG.APP_URL,
+      timestamp: new Date().toISOString()
     });
-    const result = await response.json();
     if (result.success) {
       showStatus('success', result.message);
     } else {
