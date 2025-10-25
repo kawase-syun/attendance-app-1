@@ -36,6 +36,11 @@ function doGet(e) {
   }
 }
 
+// OPTIONS リクエスト処理（CORS プリフライト対応）
+function doOptions(e) {
+  return createCorsResponse();
+}
+
 // POSTリクエスト処理
 function doPost(e) {
   try {
@@ -284,7 +289,21 @@ function createResponse(success, message, data = {}) {
 
   return ContentService
     .createTextOutput(JSON.stringify(response))
-    .setMimeType(ContentService.MimeType.JSON);
+    .setMimeType(ContentService.MimeType.JSON)
+    .setHeader('Access-Control-Allow-Origin', '*')
+    .setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    .setHeader('Access-Control-Allow-Headers', 'Content-Type');
+}
+
+// CORS プリフライトレスポンス作成
+function createCorsResponse() {
+  return ContentService
+    .createTextOutput('')
+    .setMimeType(ContentService.MimeType.TEXT)
+    .setHeader('Access-Control-Allow-Origin', '*')
+    .setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    .setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    .setHeader('Access-Control-Max-Age', '3600');
 }
 
 // 初期セットアップ用関数（手動実行）

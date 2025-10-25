@@ -26,6 +26,14 @@ self.addEventListener('install', event => {
 
 // フェッチ
 self.addEventListener('fetch', event => {
+  // Google Apps Script などの外部APIリクエストはService Workerをバイパス
+  if (event.request.url.includes('script.google.com') ||
+      event.request.url.includes('googleapis.com') ||
+      !event.request.url.startsWith(self.location.origin)) {
+    // 外部リクエストはそのまま通す（キャッシュしない）
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request)
       .then(response => {
